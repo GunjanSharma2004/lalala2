@@ -1,0 +1,185 @@
+cell 1
+import pandas as pd
+import numpy as np
+
+# Visualization (optional)
+import matplotlib.pyplot as plt
+
+# Preprocessing & ML
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_auc_score
+from sklearn.utils.class_weight import compute_class_weight
+
+# Try TensorFlow; fallback to sklearn MLP if TF not installed
+USE_SKLEARN_FALLBACK = False
+try:
+    import tensorflow as tf
+    from tensorflow import keras
+    from tensorflow.keras import layers
+except Exception as e:
+    print("TensorFlow not available; will use sklearn MLPClassifier instead.")
+    USE_SKLEARN_FALLBACK = True
+
+# Read CSV (adjust path if needed)
+csv_path = "Churn_Modelling.csv"  # put your file in the same directory or change path
+df = pd.read_csv(csv_path)
+
+print(df.head())
+print(df.shape)
+
+cell 2
+# Drop non-predictive identifiers (typical for Kaggle churn dataset)
+drop_cols = [c for c in ["RowNumber", "CustomerId", "Surname"] if c in df.columns]
+df = df.drop(columns=drop_cols)
+
+# Target
+target_col = "Exited"
+assert target_col in df.columns, "Exited column not found!"
+
+# One-Hot encode categorical (Geography, Gender) if present
+cat_cols = [c for c in ["Geography", "Gender"] if c in df.columns]
+df = pd.get_dummies(df, columns=cat_cols, drop_first=True)
+
+# Split X, y
+X = df.drop(columns=[target_col])
+y = df[target_col].astype(int)
+
+# Train/test split (stratify keeps class balance)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=42, stratify=y
+)
+
+# Scale numeric features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled  = scaler.transform(X_test)
+
+print("Train shape:", X_train_scaled.shape, " Test shape:", X_test_scaled.shape)
+print("Class balance (train):", np.bincount(y_train))
+
+cell3
+def evaluate_preds(y_true, y_pred_prob, threshold=0.5, name="Model"):
+    y_pred = (y_pred_prob >= threshold).astype(int)
+    acc = accuracy_score(y_true, y_pred)
+    cm  = confusion_matrix(y_true, y_pred)
+    report = classification_report(y_true, y_pred, digits=4)
+    roc = roc_auc_score(y_true, y_pred_prob)
+    print(f"\n{name} — Accuracy: {acc:.4f}, ROC-AUC: {roc:.4f}")
+    print("Confusion Matrix:\n", cm)
+    print("Classification Report:\n", report)
+    return acc, roc, cm
+
+if not USE_SKLEARN_FALLBACK:
+    input_dim = X_train_scaled.shape[1]
+
+    # Baseline NN
+    model_base = keras.Sequential([
+        layers.Input(shape=(input_dim,)),
+        layers.Dense(32, activation="relu"),
+        layers.Dense(1, activation="sigmoid")
+    ])
+
+    model_base.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+        loss="binary_crossentropy",
+        metrics=["accuracy", keras.metrics.AUC(name="auc")]
+    )
+
+    es = keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True, monitor="val_loss")
+
+    history_base = model_base.fit(
+        X_train_scaled, y_train,
+        validation_split=0.2,
+        epochs=30,
+        batch_size=256,
+        callbacks=[es],
+        verbose=0
+    )
+
+    # Predict probabilities
+    y_prob_base = model_base.predict(X_test_scaled).ravel()
+    acc_base, roc_base, cm_base = evaluate_preds(y_test, y_prob_base, name="Baseline NN")
+else:
+    # Fallback: sklearn MLP
+    from sklearn.neural_network import MLPClassifier
+
+    mlp = MLPClassifier(
+        hidden_layer_sizes=(32,),
+        activation="relu",
+        solver="adam",
+        learning_rate_init=1e-3,
+        max_iter=200,
+        random_state=42
+    )
+    mlp.fit(X_train_scaled, y_train)
+    y_prob_base = mlp.predict_proba(X_test_scaled)[:, 1]
+    acc_base, roc_base, cm_base = evaluate_preds(y_test, y_prob_base, name="Baseline MLP (sklearn)")
+
+cell4
+if not USE_SKLEARN_FALLBACK:
+    # Compute class weights to handle imbalance (more weight to minority class)
+    classes = np.unique(y_train)
+    weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
+    class_weight_dict = {int(cls): float(w) for cls, w in zip(classes, weights)}
+    print("Class weights:", class_weight_dict)
+
+    # Improved NN
+    model_improved = keras.Sequential([
+        layers.Input(shape=(X_train_scaled.shape[1],)),
+        layers.Dense(64, activation="relu"),
+        layers.BatchNormalization(),
+        layers.Dropout(0.3),
+
+        layers.Dense(32, activation="relu"),
+        layers.BatchNormalization(),
+        layers.Dropout(0.2),
+
+        layers.Dense(16, activation="relu"),
+        layers.Dense(1, activation="sigmoid")
+    ])
+
+    model_improved.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=1e-3),
+        loss="binary_crossentropy",
+        metrics=["accuracy", keras.metrics.AUC(name="auc")]
+    )
+
+    es2 = keras.callbacks.EarlyStopping(patience=6, restore_best_weights=True, monitor="val_auc", mode="max")
+
+    history_imp = model_improved.fit(
+        X_train_scaled, y_train,
+        validation_split=0.2,
+        epochs=50,
+        batch_size=256,
+        class_weight=class_weight_dict,
+        callbacks=[es2],
+        verbose=0
+    )
+
+    y_prob_imp = model_improved.predict(X_test_scaled).ravel()
+    acc_imp, roc_imp, cm_imp = evaluate_preds(y_test, y_prob_imp, name="Improved NN (BN+Dropout+ClassWeight)")
+else:
+    print("Improved TF model skipped because TensorFlow was not available.")
+    acc_imp = roc_imp = None
+
+cell5
+names = ["Baseline", "Improved"] if acc_imp is not None else ["Baseline"]
+accs  = [acc_base] + ([acc_imp] if acc_imp is not None else [])
+rocs  = [roc_base] + ([roc_imp] if acc_imp is not None else [])
+
+print("\n=== COMPARISON ===")
+for n, a, r in zip(names, accs, rocs):
+    print(f"{n:10s} | Accuracy: {a:.4f} | ROC-AUC: {r:.4f}")
+
+# OPTIONAL: quick CM plot for the improved (or baseline) model
+from sklearn.metrics import ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+chosen_name = "Improved" if acc_imp is not None else "Baseline"
+chosen_prob = y_prob_imp if acc_imp is not None else y_prob_base
+chosen_pred = (chosen_prob >= 0.5).astype(int)
+
+disp = ConfusionMatrixDisplay.from_predictions(y_test, chosen_pred)
+plt.title(f"Confusion Matrix — {chosen_name} Model")
+plt.show()
