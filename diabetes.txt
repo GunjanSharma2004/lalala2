@@ -1,0 +1,88 @@
+cell 1
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, classification_report
+
+# 1) Read dataset
+df = pd.read_csv("diabetes.csv")  # put path if needed, e.g., "./data/diabetes.csv"
+print("Raw shape:", df.shape)
+df.head()
+
+cell 2
+# 2) Features / Target
+target_col = "Outcome"  # change if your CSV uses a different name
+X = df.drop(columns=[target_col])
+y = df[target_col]
+
+# 3) Split (with stratify to keep class balance)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+print("Train shape:", X_train.shape, " Test shape:", X_test.shape)
+
+cell 3
+# 4) Pipeline: Standardize features then KNN
+pipe = Pipeline([
+    ("scaler", StandardScaler()),
+    ("knn", KNeighborsClassifier())
+])
+
+# Try a few sensible K values and distance/weight options
+param_grid = {
+    "knn__n_neighbors": [3, 5, 7, 9, 11],
+    "knn__weights": ["uniform", "distance"],  # distance weights can help
+    "knn__p": [1, 2]  # 1=Manhattan, 2=Euclidean
+}
+
+gs = GridSearchCV(
+    pipe,
+    param_grid,
+    cv=5,
+    scoring="accuracy",
+    n_jobs=-1
+)
+gs.fit(X_train, y_train)
+
+best_model = gs.best_estimator_
+print("Best params:", gs.best_params_)
+print("Best CV accuracy (5-fold):", round(gs.best_score_, 4))
+
+
+cell 4
+# 5) Evaluate
+y_pred = best_model.predict(X_test)
+
+cm = confusion_matrix(y_test, y_pred)
+acc = accuracy_score(y_test, y_pred)
+err = 1 - acc
+prec = precision_score(y_test, y_pred, zero_division=0)
+rec = recall_score(y_test, y_pred, zero_division=0)
+
+print("Confusion Matrix:\n", cm)
+print("Accuracy:", round(acc, 4))
+print("Error Rate:", round(err, 4))
+print("Precision:", round(prec, 4))
+print("Recall:", round(rec, 4))
+
+print("\nClassification Report:\n", classification_report(y_test, y_pred, zero_division=0))
+
+
+cell 5
+# Simple confusion matrix plot (matplotlib, single plot, no custom colors)
+import numpy as np
+plt.figure(figsize=(4,3))
+plt.imshow(cm, interpolation='nearest')
+plt.title("Confusion Matrix (KNN)")
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+for (i, j), val in np.ndenumerate(cm):
+    plt.text(j, i, int(val), ha='center', va='center')
+plt.tight_layout()
+plt.show()
